@@ -1,4 +1,4 @@
-"""CLI: python -m forwardview.refresh sox ndx spx"""
+"""CLI: python -m forwardview.refresh sox ndx spx hw energy"""
 
 from __future__ import annotations
 

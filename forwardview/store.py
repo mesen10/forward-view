@@ -25,6 +25,12 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
         " snapshot_date TEXT, universe TEXT, ticker TEXT,"
         " PRIMARY KEY (snapshot_date, universe, ticker))"
     )
+    # Multi-year annual estimates (FMP). status: ok | not_in_plan | error; data: JSON list of FY rows.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS estimates ("
+        " fetch_date TEXT, ticker TEXT, status TEXT, data TEXT,"
+        " PRIMARY KEY (fetch_date, ticker))"
+    )
     return con
 
 
@@ -76,3 +82,42 @@ def load_history(universe: str) -> pd.DataFrame:
         )
         rows = [{"snapshot_date": d, **json.loads(blob)} for d, blob in cur]
     return pd.DataFrame(rows)
+
+
+def save_estimates(ticker: str, status: str, rows: list[dict] | None, date: str | None = None) -> None:
+    date = date or dt.date.today().isoformat()
+    with connect() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO estimates VALUES (?, ?, ?, ?)",
+            (date, ticker, status, json.dumps(rows) if rows is not None else None),
+        )
+
+
+def last_estimate_attempts() -> dict[str, str]:
+    """ticker -> date of the most recent fetch attempt (any status)."""
+    with connect() as con:
+        return dict(con.execute("SELECT ticker, MAX(fetch_date) FROM estimates GROUP BY ticker"))
+
+
+def load_estimates(tickers: list[str]) -> dict[str, list[dict]]:
+    """ticker -> FY rows from the latest successful fetch."""
+    with connect() as con:
+        cur = con.execute(
+            "SELECT e.ticker, e.data FROM estimates e JOIN ("
+            "  SELECT ticker, MAX(fetch_date) AS d FROM estimates WHERE status = 'ok' GROUP BY ticker"
+            ") latest ON e.ticker = latest.ticker AND e.fetch_date = latest.d"
+        )
+        wanted = set(tickers)
+        return {t: json.loads(blob) for t, blob in cur if t in wanted}
+
+
+def estimate_status(tickers: list[str]) -> dict[str, str]:
+    """ticker -> status of the most recent attempt."""
+    with connect() as con:
+        cur = con.execute(
+            "SELECT e.ticker, e.status FROM estimates e JOIN ("
+            "  SELECT ticker, MAX(fetch_date) AS d FROM estimates GROUP BY ticker"
+            ") latest ON e.ticker = latest.ticker AND e.fetch_date = latest.d"
+        )
+        wanted = set(tickers)
+        return {t: s for t, s in cur if t in wanted}

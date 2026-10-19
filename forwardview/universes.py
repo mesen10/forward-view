@@ -28,6 +28,18 @@ UNIVERSES = {
     "sox": "PHLX Semiconductor (SOX)",
     "ndx": "Nasdaq-100",
     "spx": "S&P 500",
+    "hw": "S&P 500 Tech Hardware",
+    "energy": "S&P 500 Energy",
+}
+
+# GICS "Technology Hardware & Equipment" industry group, by sub-industry.
+HARDWARE_SUB_INDUSTRIES = {
+    "Technology Hardware, Storage & Peripherals",
+    "Communications Equipment",
+    "Electronic Equipment & Instruments",
+    "Electronic Components",
+    "Electronic Manufacturing Services",
+    "Technology Distributors",
 }
 
 
@@ -98,7 +110,17 @@ def load_spx() -> pd.DataFrame:
     )
 
 
-LOADERS = {"sox": load_sox, "ndx": load_ndx, "spx": load_spx}
+def load_hw() -> pd.DataFrame:
+    spx = load_spx()
+    return spx[spx["index_industry"].isin(HARDWARE_SUB_INDUSTRIES)].reset_index(drop=True)
+
+
+def load_energy() -> pd.DataFrame:
+    spx = load_spx()
+    return spx[spx["index_sector"] == "Energy"].reset_index(drop=True)
+
+
+LOADERS = {"sox": load_sox, "ndx": load_ndx, "spx": load_spx, "hw": load_hw, "energy": load_energy}
 
 
 def load_universe(key: str) -> pd.DataFrame:

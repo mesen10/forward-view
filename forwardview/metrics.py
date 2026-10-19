@@ -67,3 +67,50 @@ def add_derived(df: pd.DataFrame) -> pd.DataFrame:
     if "analyst_target" in df:
         df["upside"] = df["analyst_target"] / df["price"] - 1
     return df
+
+
+LT_YEARS = 4  # FY+1 ... FY+4
+
+
+def _current_fy_index(rows: list[dict], rev_cy: float | None) -> int | None:
+    """Index of the current (not yet reported) fiscal year in FMP's annual rows.
+
+    Prefer the year whose revenue estimate is closest to Yahoo's current-FY consensus, among
+    years ending from ~4 months ago to ~13 months ahead (a just-ended FY may be unreported).
+    Fall back to the first FY ending today or later.
+    """
+    today = pd.Timestamp.today().normalize()
+    window = [
+        i for i, r in enumerate(rows)
+        if today - pd.Timedelta(days=120) <= pd.Timestamp(r["fy_end"]) <= today + pd.Timedelta(days=400)
+    ]
+    if rev_cy and window:
+        scored = [(abs(rows[i]["rev"] / rev_cy - 1), i) for i in window if rows[i].get("rev")]
+        if scored and min(scored)[0] < 0.1:
+            return min(scored)[1]
+    upcoming = [i for i, r in enumerate(rows) if pd.Timestamp(r["fy_end"]) >= today]
+    return upcoming[0] if upcoming else None
+
+
+def long_term(rows: list[dict], price: float | None, rev_cy: float | None = None) -> dict:
+    """Flatten FMP annual rows into FY0..FY+4 columns: fy label, revenue/EPS, growth, P/E, analysts."""
+    i0 = _current_fy_index(rows, rev_cy)
+    if i0 is None:
+        return {}
+    out = {}
+    for k in range(LT_YEARS + 1):
+        if i0 + k >= len(rows):
+            break
+        r, prev = rows[i0 + k], rows[i0 + k - 1] if i0 + k > 0 else None
+        out[f"fy{k}_end"] = r["fy_end"]
+        out[f"fy{k}_rev"] = r.get("rev")
+        out[f"fy{k}_eps"] = r.get("eps")
+        out[f"fy{k}_rev_analysts"] = r.get("rev_analysts")
+        out[f"fy{k}_eps_analysts"] = r.get("eps_analysts")
+        if prev and prev.get("rev") and r.get("rev"):
+            out[f"fy{k}_rev_growth"] = r["rev"] / prev["rev"] - 1
+        if prev and prev.get("eps") and prev["eps"] > 0 and r.get("eps") is not None:
+            out[f"fy{k}_eps_growth"] = r["eps"] / prev["eps"] - 1
+        if price and r.get("eps") and r["eps"] > 0:
+            out[f"fy{k}_pe"] = price / r["eps"]
+    return out

@@ -32,6 +32,18 @@ def load(universe: str, date: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def long_term(universe: str, date: str) -> pd.DataFrame:
+    """FY0..FY+4 columns per company from the latest FMP estimates (empty rows if none)."""
+    snap = load(universe, date)
+    est = store.load_estimates(snap["ticker"].tolist())
+    rows = []
+    for r in snap.itertuples():
+        lt = metrics.long_term(est[r.ticker], r.price, r.rev_cy) if r.ticker in est else {}
+        rows.append({"ticker": r.ticker, "name": r.name, "market_cap": r.market_cap, **lt})
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300)
 def history(universe: str) -> pd.DataFrame:
     return store.load_history(universe)
 
@@ -65,19 +77,18 @@ failed = df[df["error"].notna()]["ticker"].tolist() if "error" in df else []
 st.title(UNIVERSES[universe])
 st.caption(f"Snapshot {date} · {len(ok)} companies" + (f" · failed: {', '.join(failed)}" if failed else ""))
 
-tab_overview, tab_companies, tab_estimates, tab_groups, tab_history = st.tabs(
-    ["Overview", "Companies", "Company estimates", "Sectors / industries", "History"]
+tab_overview, tab_companies, tab_longterm, tab_estimates, tab_groups, tab_history = st.tabs(
+    ["Overview", "Companies", "FY+1 – FY+4", "Company estimates", "Sectors / industries", "History"]
 )
 
 # ---------------- Overview ----------------
 with tab_overview:
     s = metrics.summarize(ok)
-    c = st.columns(5)
+    c = st.columns(4)
     c[0].metric("Forward P/E (cap-weighted)", fmt_x(s["forward_pe_agg"]), help="Total market cap / total forward earnings")
     c[1].metric("Forward P/E (median)", fmt_x(s["forward_pe_median"]))
     c[2].metric("Trailing P/E (cap-weighted)", fmt_x(s["trailing_pe_agg"]))
-    c[3].metric("P/E on Next FY EPS", fmt_x(s["pe_ny_agg"]))
-    c[4].metric("Market cap", f"${s['market_cap'] / 1e12:.2f}T")
+    c[3].metric("Market cap", f"${s['market_cap'] / 1e12:.2f}T")
     c = st.columns(5)
     c[0].metric("Rev growth, current Q (agg)", fmt_pct(s["rev_cq_growth_agg"]))
     c[1].metric("Rev growth, current FY (agg)", fmt_pct(s["rev_cy_growth_agg"]))
@@ -96,7 +107,7 @@ with tab_overview:
     comp = pd.DataFrame(comp)
     comp["market_cap"] = comp["market_cap"] / 1e12
     st.dataframe(
-        comp[["universe", "date", "companies", "market_cap", "forward_pe_agg", "forward_pe_median", "pe_ny_agg",
+        comp[["universe", "date", "companies", "market_cap", "forward_pe_agg", "forward_pe_median",
               "rev_cy_growth_agg", "rev_ny_growth_agg", "rev_ny_growth_median"]],
         hide_index=True,
         width="stretch",
@@ -104,7 +115,6 @@ with tab_overview:
             "market_cap": num("Mkt cap ($T)", "%.2f"),
             "forward_pe_agg": num("Fwd P/E (agg)"),
             "forward_pe_median": num("Fwd P/E (median)"),
-            "pe_ny_agg": num("P/E next FY (agg)"),
             "rev_cy_growth_agg": pct("Rev g. cur FY (agg)"),
             "rev_ny_growth_agg": pct("Rev g. next FY (agg)"),
             "rev_ny_growth_median": pct("Rev g. next FY (median)"),
@@ -115,7 +125,7 @@ with tab_overview:
     if not plot.empty:
         st.subheader("Forward P/E vs. next-FY revenue growth")
         fig = px.scatter(
-            plot, x="rev_ny_growth", y="forward_pe", size="market_cap", color="industry" if universe == "sox" else "sector",
+            plot, x="rev_ny_growth", y="forward_pe", size="market_cap", color="industry" if universe in ("sox", "hw", "energy") else "sector",
             hover_name="ticker", hover_data={"name": True, "market_cap": False}, size_max=50,
             labels={"rev_ny_growth": "Next FY revenue growth (consensus)", "forward_pe": "Forward P/E"},
         )
@@ -138,45 +148,85 @@ with tab_companies:
         view = view[view["ticker"].str.lower().str.contains(q) | view["name"].fillna("").str.lower().str.contains(q)]
     view = view[view["market_cap"].fillna(0) >= min_cap * 1e9]
     view["mcap_b"] = view["market_cap"] / 1e9
-    cols = {
-        "ticker": st.column_config.TextColumn("Ticker"),
-        "name": st.column_config.TextColumn("Name"),
+    # Detail columns are hidden by default; the "Detay" toggle shows them.
+    detail = st.toggle("Detay", value=False, help="Sector, industry, market cap, price, P/E TTM, P/S TTM and EPS estimates")
+    detail_cols = {
         "sector": st.column_config.TextColumn("Sector"),
         "industry": st.column_config.TextColumn("Industry"),
         "mcap_b": num("Mkt cap ($B)", "%.0f"),
         "price": num("Price", "%.2f"),
         "trailing_pe": num("P/E TTM"),
-        "forward_pe": num("Fwd P/E"),
-        "pe_ny": num("P/E next FY"),
         "ps_ttm": num("P/S TTM"),
+        "eps_ny_growth": pct("EPS g. next FY (est)"),
+        "eps_ny_rev90": pct("Next FY EPS rev. 90d", help="Change in consensus next-FY EPS over the last 90 days"),
+    }
+    cols = {
+        "ticker": st.column_config.TextColumn("Ticker"),
+        "name": st.column_config.TextColumn("Name"),
+        "forward_pe": num("Fwd P/E"),
         "revenue_growth_yoy": pct("Rev g. last Q (YoY)"),
         "rev_cq_growth": pct("Rev g. cur Q (est)"),
         "rev_nq_growth": pct("Rev g. next Q (est)"),
         "rev_cy_growth": pct("Rev g. cur FY (est)"),
         "rev_ny_growth": pct("Rev g. next FY (est)"),
-        "eps_ny_growth": pct("EPS g. next FY (est)"),
-        "eps_ny_rev90": pct("Next FY EPS rev. 90d", help="Change in consensus next-FY EPS over the last 90 days"),
         "gross_margin": pct("Gross margin"),
         "operating_margin": pct("Op. margin"),
         "upside": pct("Target upside"),
     }
+    if detail:
+        cols = {"ticker": cols.pop("ticker"), "name": cols.pop("name"), **detail_cols, **cols}
     st.dataframe(
         view.sort_values("market_cap", ascending=False)[list(cols)],
         hide_index=True, width="stretch", height=640, column_config=cols,
     )
     st.download_button("Download CSV", view.to_csv(index=False), f"forwardview_{universe}_{date}.csv")
 
+# ---------------- FY+1 ... FY+4 (FMP) ----------------
+LT_METRICS = {
+    "Revenue growth": ("rev_growth", pct),
+    "EPS growth": ("eps_growth", pct),
+    "P/E": ("pe", num),
+    "Revenue ($B)": ("rev", lambda label: num(label, "%.1f")),
+    "EPS": ("eps", lambda label: num(label, "%.2f")),
+    "Analysts (EPS)": ("eps_analysts", lambda label: num(label, "%d")),
+}
+
+with tab_longterm:
+    lt = long_term(universe, date)
+    status = store.estimate_status(lt["ticker"].tolist())
+    covered = lt["fy1_end"].notna() if "fy1_end" in lt else pd.Series(False, index=lt.index)
+    blocked = sum(s == "not_in_plan" for s in status.values())
+    st.caption(
+        f"FMP annual consensus · {covered.sum()} of {len(lt)} companies covered"
+        + (f" · {blocked} not in the current FMP plan" if blocked else "")
+        + (f" · {len(lt) - len(status)} not fetched yet (run `python -m forwardview.estimates`)" if len(status) < len(lt) else "")
+        + ". FY0 is the current, not yet reported fiscal year; FY+1 is the year after it."
+    )
+    choice = st.radio("Metric", list(LT_METRICS), horizontal=True)
+    suffix, col_type = LT_METRICS[choice]
+    view = lt[covered].sort_values("market_cap", ascending=False)
+    cols = {"ticker": st.column_config.TextColumn("Ticker"), "name": st.column_config.TextColumn("Name"),
+            "fy0_end": st.column_config.TextColumn("FY0 ends")}
+    for k in range(0 if suffix in ("rev", "eps", "pe", "eps_analysts") else 1, metrics.LT_YEARS + 1):
+        c = f"fy{k}_{suffix}"
+        if c in view:
+            cols[c] = col_type("FY0" if k == 0 else f"FY+{k}")
+    if view.empty:
+        st.info("No FMP estimates for this universe yet.")
+    else:
+        st.dataframe(view[[c for c in cols if c in view]], hide_index=True, width="stretch", height=640, column_config=cols)
+    st.caption("Growth is year over year versus the prior fiscal year's consensus. Far years have few analysts; check the Analysts view.")
+
 # ---------------- Company estimates ----------------
 with tab_estimates:
     tickers = ok.sort_values("market_cap", ascending=False)["ticker"].tolist()
     tk = st.selectbox("Company", tickers, format_func=lambda t: f"{t} · {ok.set_index('ticker').at[t, 'name']}")
     r = ok.set_index("ticker").loc[tk]
-    c = st.columns(5)
+    c = st.columns(4)
     c[0].metric("Price", f"${r['price']:.2f}" if pd.notna(r["price"]) else "–", fmt_pct(r.get("upside")) + " to target")
     c[1].metric("Fwd P/E", fmt_x(r["forward_pe"]))
-    c[2].metric("P/E next FY", fmt_x(r["pe_ny"]))
-    c[3].metric("Rev growth last Q", fmt_pct(r["revenue_growth_yoy"]))
-    c[4].metric("Recommendation (1=Strong Buy)", "–" if pd.isna(r["recommendation"]) else f"{r['recommendation']:.2f}")
+    c[2].metric("Rev growth last Q", fmt_pct(r["revenue_growth_yoy"]))
+    c[3].metric("Recommendation (1=Strong Buy)", "–" if pd.isna(r["recommendation"]) else f"{r['recommendation']:.2f}")
 
     est = pd.DataFrame([
         {
@@ -211,7 +261,35 @@ with tab_estimates:
             "Down revisions 30d": num("Down rev. 30d", "%d"),
         },
     )
-    st.caption("Yahoo's free data covers current/next quarter and current/next fiscal year. FY+2 and beyond need a paid source (e.g. FMP).")
+    tl = long_term(universe, date).set_index("ticker").loc[tk]
+    if pd.notna(tl.get("fy1_end")):
+        st.subheader("Annual consensus, FY0 – FY+4 (FMP)")
+        yrs = [k for k in range(metrics.LT_YEARS + 1) if pd.notna(tl.get(f"fy{k}_end"))]
+        st.dataframe(
+            pd.DataFrame([
+                {
+                    "Year": "FY0" if k == 0 else f"FY+{k}",
+                    "FY ends": tl[f"fy{k}_end"],
+                    "Revenue est. ($B)": tl[f"fy{k}_rev"] / 1e9 if pd.notna(tl[f"fy{k}_rev"]) else None,
+                    "Rev growth": tl.get(f"fy{k}_rev_growth"),
+                    "EPS est.": tl[f"fy{k}_eps"],
+                    "EPS growth": tl.get(f"fy{k}_eps_growth"),
+                    "P/E": tl.get(f"fy{k}_pe"),
+                    "Analysts (rev / EPS)": f"{tl[f'fy{k}_rev_analysts']:.0f} / {tl[f'fy{k}_eps_analysts']:.0f}",
+                }
+                for k in yrs
+            ]),
+            hide_index=True, width="stretch",
+            column_config={
+                "Revenue est. ($B)": num("Revenue est. ($B)", "%.1f"),
+                "Rev growth": pct("Rev growth"),
+                "EPS est.": num("EPS est.", "%.2f"),
+                "EPS growth": pct("EPS growth"),
+                "P/E": num("P/E"),
+            },
+        )
+    else:
+        st.caption("No FY+1 – FY+4 estimates for this company (not covered by the current FMP plan, or not fetched yet).")
 
     h = history(universe)
     if not h.empty and (h["ticker"] == tk).sum() > 1:
@@ -224,11 +302,11 @@ with tab_estimates:
 # ---------------- Sectors / industries ----------------
 with tab_groups:
     group_col = st.radio("Group by", ["sector", "industry"], horizontal=True,
-                         index=1 if universe == "sox" else 0)
+                         index=1 if universe in ("sox", "hw", "energy") else 0)
     g = metrics.by_group(ok, group_col)
     g["market_cap"] = g["market_cap"] / 1e9
     st.dataframe(
-        g[[group_col, "companies", "market_cap", "forward_pe_agg", "forward_pe_median", "pe_ny_agg", "trailing_pe_agg",
+        g[[group_col, "companies", "market_cap", "forward_pe_agg", "forward_pe_median", "trailing_pe_agg",
            "rev_cq_growth_agg", "rev_cy_growth_agg", "rev_ny_growth_agg", "rev_ny_growth_median", "eps_ny_growth_median"]],
         hide_index=True, width="stretch",
         column_config={
@@ -236,7 +314,6 @@ with tab_groups:
             "market_cap": num("Mkt cap ($B)", "%.0f"),
             "forward_pe_agg": num("Fwd P/E (agg)"),
             "forward_pe_median": num("Fwd P/E (median)"),
-            "pe_ny_agg": num("P/E next FY (agg)"),
             "trailing_pe_agg": num("P/E TTM (agg)"),
             "rev_cq_growth_agg": pct("Rev g. cur Q (agg)"),
             "rev_cy_growth_agg": pct("Rev g. cur FY (agg)"),
@@ -258,7 +335,7 @@ with tab_history:
         rows = [{"date": d, **metrics.summarize(g)} for d, g in h.groupby("snapshot_date")]
         hs = pd.DataFrame(rows)
         c1, c2 = st.columns(2)
-        fig = px.line(hs, x="date", y=["forward_pe_agg", "forward_pe_median", "pe_ny_agg"], markers=True,
+        fig = px.line(hs, x="date", y=["forward_pe_agg", "forward_pe_median"], markers=True,
                       labels={"value": "P/E", "date": "", "variable": ""})
         fig.update_layout(title="Valuation", height=380)
         c1.plotly_chart(fig, width="stretch")
