@@ -79,6 +79,8 @@ def _current_fy_index(rows: list[dict], rev_cy: float | None) -> int | None:
     years ending from ~4 months ago to ~13 months ahead (a just-ended FY may be unreported).
     Fall back to the first FY ending today or later.
     """
+    if rows and rows[0].get("src") == "nasdaq":
+        return 0  # Nasdaq lists only the current FY and later
     today = pd.Timestamp.today().normalize()
     window = [
         i for i, r in enumerate(rows)

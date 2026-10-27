@@ -55,7 +55,7 @@ The plist uses absolute paths; update them if the project folder moves.
 - "agg" figures are market-cap weighted, index style: total market cap / total earnings,
   total estimated revenue / total base revenue. Medians show the typical company.
 - Current/Next FY follow each company's own fiscal calendar (NVDA's FY ends in January).
-- FY+2 and later estimates are not in Yahoo's free data; they come from FMP (see below).
+- FY+2 and later estimates are not in Yahoo's free data; they come from FMP, with Nasdaq.com as fallback (see below).
 
 ## FY+1 ... FY+4 estimates (FMP)
 
@@ -69,4 +69,6 @@ Annual revenue/EPS consensus is stored in the `estimates` table and shown in the
 "FY+1 – FY+4" tab and in "Company estimates". FY0 is the current, not yet reported fiscal
 year. Tickers fetched within the last 7 days are skipped (`--max-age`), and a run stops
 after 200 calls (`--max-calls`), to stay inside the free plan's 250 calls/day.
-The free plan covers only a small sample of large symbols; the rest show as "not in plan".
+The free plan covers only a small sample of large symbols. For the rest, annual EPS consensus
+(FY0 ... FY+3, no revenue) comes from Nasdaq.com (Zacks data, free, no key). FMP rows whose EPS
+is in another currency than the US listing (e.g. TSM in TWD) are replaced with Nasdaq data too.

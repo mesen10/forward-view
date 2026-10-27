@@ -25,7 +25,8 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
         " snapshot_date TEXT, universe TEXT, ticker TEXT,"
         " PRIMARY KEY (snapshot_date, universe, ticker))"
     )
-    # Multi-year annual estimates (FMP). status: ok | not_in_plan | error; data: JSON list of FY rows.
+    # Multi-year annual estimates. status: ok (FMP) | nasdaq (FMP plan does not cover it; Nasdaq EPS)
+    # | not_in_plan (neither source); data: JSON list of FY rows.
     con.execute(
         "CREATE TABLE IF NOT EXISTS estimates ("
         " fetch_date TEXT, ticker TEXT, status TEXT, data TEXT,"
@@ -104,7 +105,7 @@ def load_estimates(tickers: list[str]) -> dict[str, list[dict]]:
     with connect() as con:
         cur = con.execute(
             "SELECT e.ticker, e.data FROM estimates e JOIN ("
-            "  SELECT ticker, MAX(fetch_date) AS d FROM estimates WHERE status = 'ok' GROUP BY ticker"
+            "  SELECT ticker, MAX(fetch_date) AS d FROM estimates WHERE status IN ('ok', 'nasdaq') GROUP BY ticker"
             ") latest ON e.ticker = latest.ticker AND e.fetch_date = latest.d"
         )
         wanted = set(tickers)

@@ -33,7 +33,7 @@ def load(universe: str, date: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def long_term(universe: str, date: str) -> pd.DataFrame:
-    """FY0..FY+4 columns per company from the latest FMP estimates (empty rows if none)."""
+    """FY0..FY+4 columns per company from the latest FMP / Nasdaq estimates (empty rows if none)."""
     snap = load(universe, date)
     est = store.load_estimates(snap["ticker"].tolist())
     rows = []
@@ -181,7 +181,7 @@ with tab_companies:
     )
     st.download_button("Download CSV", view.to_csv(index=False), f"forwardview_{universe}_{date}.csv")
 
-# ---------------- FY+1 ... FY+4 (FMP) ----------------
+# ---------------- FY+1 ... FY+4 (FMP, Nasdaq fallback) ----------------
 LT_METRICS = {
     "Revenue growth": ("rev_growth", pct),
     "EPS growth": ("eps_growth", pct),
@@ -196,9 +196,11 @@ with tab_longterm:
     status = store.estimate_status(lt["ticker"].tolist())
     covered = lt["fy1_end"].notna() if "fy1_end" in lt else pd.Series(False, index=lt.index)
     blocked = sum(s == "not_in_plan" for s in status.values())
+    eps_only = sum(s == "nasdaq" for s in status.values())
     st.caption(
-        f"FMP annual consensus · {covered.sum()} of {len(lt)} companies covered"
-        + (f" · {blocked} not in the current FMP plan" if blocked else "")
+        f"Annual consensus · {covered.sum()} of {len(lt)} companies covered"
+        + (f" · {eps_only} EPS only (Nasdaq; not in the current FMP plan)" if eps_only else "")
+        + (f" · {blocked} with no data" if blocked else "")
         + (f" · {len(lt) - len(status)} not fetched yet (run `python -m forwardview.estimates`)" if len(status) < len(lt) else "")
         + ". FY0 is the current, not yet reported fiscal year; FY+1 is the year after it."
     )
@@ -212,7 +214,7 @@ with tab_longterm:
         if c in view:
             cols[c] = col_type("FY0" if k == 0 else f"FY+{k}")
     if view.empty:
-        st.info("No FMP estimates for this universe yet.")
+        st.info("No FY+1 – FY+4 estimates for this universe yet.")
     else:
         st.dataframe(view[[c for c in cols if c in view]], hide_index=True, width="stretch", height=640, column_config=cols)
     st.caption("Growth is year over year versus the prior fiscal year's consensus. Far years have few analysts; check the Analysts view.")
@@ -263,7 +265,7 @@ with tab_estimates:
     )
     tl = long_term(universe, date).set_index("ticker").loc[tk]
     if pd.notna(tl.get("fy1_end")):
-        st.subheader("Annual consensus, FY0 – FY+4 (FMP)")
+        st.subheader("Annual consensus, FY0 – FY+4")
         yrs = [k for k in range(metrics.LT_YEARS + 1) if pd.notna(tl.get(f"fy{k}_end"))]
         st.dataframe(
             pd.DataFrame([
@@ -275,7 +277,9 @@ with tab_estimates:
                     "EPS est.": tl[f"fy{k}_eps"],
                     "EPS growth": tl.get(f"fy{k}_eps_growth"),
                     "P/E": tl.get(f"fy{k}_pe"),
-                    "Analysts (rev / EPS)": f"{tl[f'fy{k}_rev_analysts']:.0f} / {tl[f'fy{k}_eps_analysts']:.0f}",
+                    "Analysts (rev / EPS)": " / ".join(
+                        "–" if pd.isna(tl[f"fy{k}_{m}_analysts"]) else f"{tl[f'fy{k}_{m}_analysts']:.0f}" for m in ("rev", "eps")
+                    ),
                 }
                 for k in yrs
             ]),
@@ -289,7 +293,7 @@ with tab_estimates:
             },
         )
     else:
-        st.caption("No FY+1 – FY+4 estimates for this company (not covered by the current FMP plan, or not fetched yet).")
+        st.caption("No FY+1 – FY+4 estimates for this company (no FMP or Nasdaq data, or not fetched yet).")
 
     h = history(universe)
     if not h.empty and (h["ticker"] == tk).sum() > 1:
